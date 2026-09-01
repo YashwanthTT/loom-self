@@ -1,0 +1,17 @@
+Weather Report for: bangalore
+Resolved Area: Bangalore, Karnataka, India
+Fetched At (UTC): 2026-09-01 06:58:22 UTC
+Fetched At (Local): 2026-09-01 12:28:22
+Source: wttr.in (https://wttr.in/bangalore?format=j1)
+==================================================
+Condition: Overcast 
+Temperature: 29°C / 83°F (Feels like 29°C / 84°F)
+Humidity: 46%
+Wind: 21 km/h (13 mph) WNW
+Pressure: 1012 hPa
+Visibility: 10 km
+Cloud Cover: 100%
+Precipitation: 0.0 mm
+Observation Time: 06:24 AM
+Today's Forecast Max/Min: 31°C / 20°C
+==================================================

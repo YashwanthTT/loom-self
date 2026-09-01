@@ -1,0 +1,15 @@
+# env — never commit real keys
+.env
+
+# python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# tools generated
+tools/*.py
+!tools/manifest.json
+!tools/__init__.py

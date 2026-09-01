@@ -1,1 +1,11 @@
-pip install langchain langchain-openai openai pydantic
+langchain
+langchain-classic
+langchain-openai
+openai
+pydantic
+python-dotenv
+opencode-ai
+Pillow
+pytesseract
+requests
+httpx

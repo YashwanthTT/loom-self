@@ -2,7 +2,10 @@ import json
 import importlib.util
 from pathlib import Path
 from typing import Callable, Optional
-from langchain.tools import StructuredTool
+try:
+    from langchain.tools import StructuredTool  # langchain <1.0
+except ImportError:
+    from langchain_core.tools import StructuredTool  # langchain 1.x + langchain-classic
  
 TOOLS_DIR = Path(__file__).parent / "tools"
 TOOLS_DIR.mkdir(exist_ok=True)
@@ -19,7 +22,10 @@ class ToolRegistry:
             func=func,
             name=name,
             description=description,
+            handle_tool_error=True,
         )
+        # Handle Muse Spark Responses API namespacing: it may call default.<name>
+        self._tools[f"default.{name}"] = tool
         self._tools[name] = tool
         return tool
  

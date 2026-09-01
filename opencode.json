@@ -1,0 +1,21 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "opencode/muse-spark-1.2-contributor-free",
+  "small_model": "opencode/muse-spark-1.2-contributor-free",
+  "provider": {
+    "opencode": {
+      "npm": "@ai-sdk/openai",
+      "name": "OpenCode Zen",
+      "options": {
+        "baseURL": "https://opencode.ai/zen/v1",
+        "apiKey": "{env:OPENCODE_API_KEY}"
+      },
+      "models": {
+        "muse-spark-1.2-contributor-free": {
+          "name": "Muse Spark 1.2 Contributor Free",
+          "limit": { "context": 1048576, "output": 131072 }
+        }
+      }
+    }
+  }
+}
