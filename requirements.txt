@@ -1,11 +1,10 @@
-langchain
-langchain-classic
+langchain>=1.0
+langchain-core
 langchain-openai
 openai
-pydantic
+pydantic>=2
 python-dotenv
-opencode-ai
-Pillow
-pytesseract
-requests
 httpx
+requests
+textual>=6
+rich
