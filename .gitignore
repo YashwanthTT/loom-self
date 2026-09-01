@@ -9,7 +9,10 @@ __pycache__/
 venv/
 *.egg-info/
 
-# tools generated
+# agent state (generated tools/skills/plans)
+.agent/
+outputs/
+AGENTS.md
+
+# legacy tools dir (removed, now .agent/tools)
 tools/*.py
-!tools/manifest.json
-!tools/__init__.py
