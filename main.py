@@ -45,6 +45,27 @@ def _check_credentials():
 # "Generate a 16-character secure password and calculate its entropy in bits.",
 # "Create OCR tool to extract text from images and save it to a text file.",
 def main():
+    import sys
+
+    # Flags for explicit maintenance (Stage E) — also available via improve.py
+    if "--evaluate" in sys.argv:
+        from evaluator import evaluate_all_tools
+
+        evaluate_all_tools()
+        return
+    if "--improve" in sys.argv:
+        idx = sys.argv.index("--improve")
+        tool_names = [a for a in sys.argv[idx + 1 :] if not a.startswith("--")]
+        if not tool_names:
+            print("Usage: python main.py --improve <tool_name> [...]  or  python improve.py <tool_name>")
+            return
+        _check_credentials()
+        agent = SelfExtendingOrchestrator()
+        for tn in tool_names:
+            print(f"\n[main] Improving '{tn}'...")
+            print(agent.improve_tool(tn))
+        return
+
     _check_credentials()
     agent = SelfExtendingOrchestrator()
 

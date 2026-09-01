@@ -9,21 +9,33 @@ from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
 from llm_config import create_chat_openai
-from registry import registry
+from registry import registry, TOOLS_DIR, MANIFEST_PATH
 from generator import ToolGeneratorAgent
 from validator import ToolValidator, ValidationError
+from memory import memory
+from evaluator import ToolEvaluator
+from rewriter import ToolRewriterAgent
+
+import time as _time
+import json as _json
+from pathlib import Path as _Path
+from datetime import datetime as _datetime, timezone as _timezone
 
 ORCHESTRATOR_PROMPT = ChatPromptTemplate.from_messages(
     [
         (
             "system",
-            """You are an autonomous AI agent with the ability to extend your own capabilities.
- 
+            """You are an autonomous AI agent with the ability to extend your own capabilities and improve them over time.
+
 When you need to perform an action for which you have no tool:
 1. Use the `request_new_tool` tool to describe exactly what you need.
 2. Wait — the system will generate and register the tool automatically.
 3. The new tool will then be available. Use it to complete the task.
- 
+
+When a tool repeatedly fails or is unreliable:
+- Use the `evaluate_and_improve_tool` tool to trigger the self-improvement loop. Give it the tool name (e.g. "write_text_file").
+- The system will evaluate its history, rewrite it if needed, validate and regression-test the new version, and replace it only if better.
+
 Rules:
 - After creating a new tool, do NOT try to test it with empty or placeholder arguments. Only call it if the user provided concrete file paths/values. If no concrete values are given, simply report that the tool was created successfully and describe its usage.
 - When calling any tool, always provide valid JSON arguments with all required string fields as non-empty strings. Never call with empty string "" or missing required fields.
@@ -53,6 +65,48 @@ class NewToolRequest(BaseModel):
     )
 
 
+class EvaluateAndImproveRequest(BaseModel):
+    tool_name: str = Field(description="snake_case name of existing tool to evaluate and improve")
+
+
+def _wrap_tool_with_memory(tool: StructuredTool) -> StructuredTool:
+    """Wrap a registry StructuredTool so every invocation is timed and recorded to memory."""
+    orig_func = tool.func
+    # Some langchain versions store coroutine separately; handle both
+    orig_name = tool.name  # keep alias name for dedup but normalize on record
+
+    # Preserve args_schema if present; otherwise let from_function infer from func
+    schema = getattr(tool, "args_schema", None)
+
+    def _wrapper(**kwargs):
+        start = _time.perf_counter()
+        try:
+            result = orig_func(**kwargs) if orig_func else None
+            latency = (_time.perf_counter() - start) * 1000
+            # Detect logical failure: dict with success==False
+            success = True
+            if isinstance(result, dict) and result.get("success") is False:
+                success = False
+            memory.record(orig_name, kwargs, success, result, latency)
+            return result
+        except Exception as e:
+            latency = (_time.perf_counter() - start) * 1000
+            memory.record(orig_name, kwargs, False, str(e), latency)
+            raise
+
+    # Re-create StructuredTool with same identity but wrapped func
+    # Use from_function so name/description/arg schema are preserved for LLM
+    kwargs_for_tool: dict = {
+        "func": _wrapper,
+        "name": tool.name,
+        "description": tool.description,
+        "handle_tool_error": True,
+    }
+    if schema is not None:
+        kwargs_for_tool["args_schema"] = schema
+    return StructuredTool.from_function(**kwargs_for_tool)
+
+
 class SelfExtendingOrchestrator:
     def __init__(self, model: str | None = None, temperature: float = 0):
         # Uses Opencode (Zen / Go) if OPENCODE_*_API_KEY is set, else falls back to OPENAI_API_KEY.
@@ -61,6 +115,8 @@ class SelfExtendingOrchestrator:
         self.llm = create_chat_openai(model=model, temperature=temperature) if model else create_chat_openai(temperature=temperature)
         self.generator = ToolGeneratorAgent()
         self.validator = ToolValidator()
+        self.evaluator = ToolEvaluator()
+        self.rewriter = ToolRewriterAgent()
         self._build_executor()
 
     def _build_executor(self):
@@ -73,13 +129,30 @@ class SelfExtendingOrchestrator:
             ),
             args_schema=NewToolRequest,
         )
-        # Deduplicate by tool name to handle default. prefix aliasing
+        improve_tool = StructuredTool.from_function(
+            func=self.improve_tool,
+            name="evaluate_and_improve_tool",
+            description=(
+                "Evaluate a tool's execution history and, if it is weak (low success rate or repeated failures), "
+                "rewrite it to fix failures while preserving working behavior. "
+                "Use when a tool has failed or you suspect it is unreliable. "
+                "Input is the tool's snake_case name, e.g. write_text_file."
+            ),
+            args_schema=EvaluateAndImproveRequest,
+        )
+        # Deduplicate by tool name to handle default. prefix aliasing, wrapping registry tools with memory recording
         seen = set()
-        unique_tools = []
-        for t in [request_tool] + registry.all_tools():
+        unique_tools: list[StructuredTool] = []
+        # meta-tools are not wrapped
+        for meta in [request_tool, improve_tool]:
+            unique_tools.append(meta)
+            seen.add(meta.name)
+        for t in registry.all_tools():
             if t.name not in seen:
                 seen.add(t.name)
-                unique_tools.append(t)
+                # Wrap registry tools so every execution is recorded
+                wrapped = _wrap_tool_with_memory(t)
+                unique_tools.append(wrapped)
         # Handle Muse Spark empty arguments -> valid JSON error: provide default args
         agent = create_openai_tools_agent(self.llm, unique_tools, ORCHESTRATOR_PROMPT)
         self.executor = AgentExecutor(
@@ -146,16 +219,17 @@ class SelfExtendingOrchestrator:
                 try:
                     new_tool = registry.get(tool_name)
                     if new_tool:
+                        wrapped_new = _wrap_tool_with_memory(new_tool)
                         # Update current executor if it exists (mid-invoke stale map)
                         if hasattr(self.executor, "tools"):
-                            # Langchain classic stores tools list
-                            if new_tool not in self.executor.tools:
-                                self.executor.tools.append(new_tool)
-                        # Also handle dict-based lookup if present
+                            if wrapped_new not in self.executor.tools:
+                                # Avoid duplicate by name check (wrapped vs unwrapped have same name)
+                                if not any(t.name == wrapped_new.name for t in self.executor.tools):
+                                    self.executor.tools.append(wrapped_new)
                         for attr in ["_tools_by_name", "tool_map", "name_to_tool_map"]:
                             if hasattr(self.executor, attr):
-                                getattr(self.executor, attr)[tool_name] = new_tool
-                                getattr(self.executor, attr)[f"default.{tool_name}"] = new_tool
+                                getattr(self.executor, attr)[tool_name] = wrapped_new
+                                getattr(self.executor, attr)[f"default.{tool_name}"] = wrapped_new
                 except Exception as _e:
                     print(f"[Orchestrator] patch current executor failed: {_e}")
 
@@ -173,6 +247,117 @@ class SelfExtendingOrchestrator:
                     return f"Failed to generate '{tool_name}' after 3 attempts: {e}"
 
         return f"Tool generation failed for '{tool_name}'."
+
+    def improve_tool(self, tool_name: str) -> str:
+        """Self-improvement loop: evaluate -> rewrite -> validate -> regression -> backup & replace."""
+        key = tool_name.removeprefix("default.")
+        print(f"\n[Orchestrator] Evaluating '{key}' for improvement...")
+        evaluation = self.evaluator.evaluate(key)
+        print(f"[Orchestrator] Score: {evaluation.score:.2f} success_rate={evaluation.success_rate:.2%} avg_latency={evaluation.avg_latency_ms:.1f}ms streak={evaluation.recent_failure_streak} needs_improvement={evaluation.needs_improvement} reason={evaluation.reason}")
+        if not evaluation.needs_improvement:
+            return f"Tool '{key}' is healthy (score={evaluation.score:.2f}, success_rate={evaluation.success_rate:.2%}, {evaluation.reason}). No rewrite needed."
+        if evaluation.total_runs == 0:
+            return f"Tool '{key}' has no execution history yet — cannot improve without evidence."
+
+        tool_file = TOOLS_DIR / f"{key}.py"
+        if not tool_file.exists():
+            return f"Tool '{key}' source not found at {tool_file}. Cannot rewrite."
+        current_source = tool_file.read_text()
+        # description from manifest
+        description = key
+        try:
+            manifest = _json.loads(MANIFEST_PATH.read_text()) if MANIFEST_PATH.exists() else {}
+            if key in manifest:
+                description = manifest[key].get("description", key)
+        except Exception:
+            pass
+
+        # Gather failures for prompt (last 3 failures)
+        history = memory.get_history(key)
+        failures = [h for h in history if h.get("success") is False][-3:]
+        print(f"[Orchestrator] Found {len(failures)} recent failures, {len(memory.get_regression_examples(key))} regression examples for '{key}'")
+
+        print(f"[Orchestrator] Rewriting '{key}' (attempt 1/1)...")
+        try:
+            new_source = self.rewriter.rewrite(key, current_source, description, failures)
+        except Exception as e:
+            print(f"[Orchestrator] ❌ Rewrite failed: {e}")
+            return f"Rewrite failed for '{key}': {e}"
+
+        print(f"[Orchestrator] Validating rewritten '{key}'...")
+        try:
+            self.validator.validate(key, new_source)
+            print(f"[Orchestrator] ✅ Validation passed for '{key}'")
+        except ValidationError as e:
+            print(f"[Orchestrator] ❌ Validation failed for '{key}': {e}")
+            return f"Rewritten '{key}' failed validation: {e}"
+        except Exception as e:
+            print(f"[Orchestrator] ❌ Validation error for '{key}': {e}")
+            return f"Rewritten '{key}' failed validation: {e}"
+
+        print(f"[Orchestrator] Running regression for '{key}'...")
+        try:
+            from tests.regression_runner import run_regression
+            ok, fails = run_regression(key, new_source)
+            if not ok:
+                print(f"[Orchestrator] ❌ Regression failed for '{key}': {fails}")
+                return f"Rewritten '{key}' failed regression: {fails}"
+            print(f"[Orchestrator] ✅ Regression passed for '{key}' ({len(memory.get_regression_examples(key))} examples)")
+        except Exception as e:
+            print(f"[Orchestrator] ❌ Regression harness error for '{key}': {e}")
+            return f"Regression check failed for '{key}': {e}"
+
+        # Check that the triggering failure is now fixed (if there was a failure) — no crash, graceful handling allowed
+        if failures:
+            last_failure = failures[-1]
+            last_args = last_failure.get("args", {})
+            if isinstance(last_args, dict) and last_args:
+                print(f"[Orchestrator] Verifying fix for triggering failure args={last_args}...")
+                try:
+                    from tests.regression_runner import _run_single_no_crash
+                    fixed_ok, fixed_err = _run_single_no_crash(key, new_source, last_args)
+                    if not fixed_ok:
+                        print(f"[Orchestrator] ❌ Triggering failure still crashes after rewrite: {fixed_err}")
+                        return f"Rewritten '{key}' still crashes on the triggering case {last_args}: {fixed_err}. Not keeping."
+                    print(f"[Orchestrator] ✅ Triggering failure fixed for '{key}' (no crash, graceful handling)")
+                except Exception as e:
+                    print(f"[Orchestrator] ⚠️ Could not verify triggering failure fix: {e}")
+
+        # Backup old version (never overwrite without fallback)
+        try:
+            backup_path = tool_file.with_suffix(".py.bak")
+            backup_path.write_text(current_source)
+            print(f"[Orchestrator] Backup saved to {backup_path}")
+            versions_dir = TOOLS_DIR / "versions"
+            versions_dir.mkdir(exist_ok=True)
+            timestamp = _datetime.now(_timezone.utc).strftime("%Y%m%d_%H%M%S")
+            versioned = versions_dir / f"{key}_{timestamp}.py"
+            versioned.write_text(current_source)
+            print(f"[Orchestrator] Version saved to {versioned}")
+        except Exception as e:
+            print(f"[Orchestrator] ⚠️ Backup failed: {e}")
+
+        # Write new source, update manifest, re-register, rebuild executor
+        try:
+            tool_file.write_text(new_source)
+            manifest = _json.loads(MANIFEST_PATH.read_text()) if MANIFEST_PATH.exists() else {}
+            manifest[key] = {"description": description, "file": f"{key}.py"}
+            MANIFEST_PATH.write_text(_json.dumps(manifest, indent=2))
+            exec_globals: dict = {}
+            exec(new_source, exec_globals)  # noqa: S102
+            func = exec_globals[key]
+            registry.register(key, func, description)
+            self._build_executor()
+            print(f"[Orchestrator] ✅ '{key}' improved and re-registered (old version backed up).")
+            return f"Tool '{key}' improved successfully. Validation and regression passed. Backup saved to {tool_file}.bak and versions/. New version is now active."
+        except Exception as e:
+            print(f"[Orchestrator] ❌ Failed to persist improved '{key}': {e}")
+            # attempt rollback
+            try:
+                tool_file.write_text(current_source)
+            except Exception:
+                pass
+            return f"Failed to persist improved '{key}': {e}"
 
     def run(self, task: str) -> str:
         print(f"\n{'='*60}")

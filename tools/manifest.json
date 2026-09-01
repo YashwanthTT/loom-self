@@ -50,5 +50,9 @@
   "make_file_executable": {
     "description": "Makes a file executable by setting chmod +x permission",
     "file": "make_file_executable.py"
+  },
+  "demo_broken_calc": {
+    "description": "Adds two numbers given as strings",
+    "file": "demo_broken_calc.py"
   }
 }
