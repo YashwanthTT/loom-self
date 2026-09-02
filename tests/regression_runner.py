@@ -5,7 +5,7 @@ import tempfile
 import textwrap
 from pathlib import Path
 
-from memory import memory
+from agent.memory import memory
 
 # Reuse same timeout as validator
 _TIMEOUT = 10
@@ -147,7 +147,8 @@ if __name__ == "__main__":
         print("Usage: python -m tests.regression_runner <tool_name> [source_file]")
         sys.exit(1)
     tool = sys.argv[1]
-    source_file = sys.argv[2] if len(sys.argv) > 2 else f"tools/{tool}.py"
+    from agent.paths import get_paths
+    source_file = sys.argv[2] if len(sys.argv) > 2 else str(get_paths().tools / f"{tool}.py")
     p = Path(source_file)
     if not p.exists():
         print(f"source file not found: {p}")

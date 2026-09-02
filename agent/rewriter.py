@@ -1,10 +1,11 @@
-from pathlib import Path
 from langchain_core.prompts import ChatPromptTemplate
 
-from llm_config import create_chat_openai
-from memory import memory
+from agent.memory import memory
+from agent.paths import get_paths
+from inference.config import create_chat_openai
+from selfLearn.textutils import extract_response_text, strip_code_fence
 
-TOOLS_DIR = Path(__file__).parent / "tools"
+TOOLS_DIR = get_paths().tools
 
 REWRITE_PROMPT = ChatPromptTemplate.from_messages(
     [
@@ -107,30 +108,8 @@ class ToolRewriterAgent:
                 "regression_text": regression_text.strip(),
             }
         )
-        raw_content = response.content
-        if isinstance(raw_content, list):
-            texts = []
-            for block in raw_content:
-                if isinstance(block, dict) and block.get("type") == "text":
-                    texts.append(block.get("text", ""))
-                elif isinstance(block, str):
-                    texts.append(block)
-            content = "\n".join(texts).strip()
-        else:
-            content = (raw_content or "").strip()
-        if not content:
-            extra = getattr(response, "additional_kwargs", {}) or {}
-            content = extra.get("reasoning", "") or extra.get("reasoning_content", "") or ""
-            meta = getattr(response, "response_metadata", {}) or {}
-            if not content and isinstance(meta, dict):
-                content = meta.get("reasoning", "") or ""
-        if content.startswith("```"):
-            parts = content.split("```")
-            if len(parts) >= 2:
-                content = parts[1]
-                if content.startswith("python"):
-                    content = content[len("python") :].strip()
-                content = content.strip()
+        content = extract_response_text(response)
+        content = strip_code_fence(content)
         if not content:
             raise ValueError(f"Empty rewrite for {tool_name}: raw={response}")
         return content.strip()

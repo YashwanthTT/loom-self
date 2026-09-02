@@ -10,9 +10,9 @@ Usage:
 import argparse
 import sys
 
-from orchestrator import SelfExtendingOrchestrator
-from evaluator import ToolEvaluator
-from memory import memory
+from agent.orchestrator import AgentOrchestrator
+from agent.evaluator import ToolEvaluator, evaluate_all_tools
+from agent.memory import memory
 
 
 def main():
@@ -25,7 +25,6 @@ def main():
     evaluator = ToolEvaluator()
 
     if args.evaluate:
-        from evaluator import evaluate_all_tools
         evaluate_all_tools()
         return 0
 
@@ -44,11 +43,11 @@ def main():
         parser.print_help()
         print("\n[improve] No tools specified. Use --all or list tool names.")
         print("Available tools with history:", list(memory.all_tool_names()) or "(no memory yet)")
-        from registry import registry
-        print("Registered tools:", [n for n in registry.tool_names() if not n.startswith("default.")])
+        from agent.registry import registry
+        print("Registered tools:", registry.tool_names())
         return 1
 
-    orchestrator = SelfExtendingOrchestrator()
+    orchestrator = AgentOrchestrator()
     for tool_name in args.tools:
         print(f"\n{'='*60}\n[improve] Improving '{tool_name}'...\n{'='*60}")
         try:

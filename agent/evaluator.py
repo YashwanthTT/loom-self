@@ -1,6 +1,6 @@
 from dataclasses import dataclass
-from memory import memory
-from registry import registry
+from agent.memory import memory
+from agent.registry import registry
 
 @dataclass
 class EvaluationResult:

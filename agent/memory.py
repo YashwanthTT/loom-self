@@ -4,9 +4,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-TOOLS_DIR = Path(__file__).parent / "tools"
-TOOLS_DIR.mkdir(exist_ok=True)
-MEMORY_PATH = TOOLS_DIR / "memory.json"
+from agent.paths import get_paths
+
+MEMORY_PATH = get_paths().state / "memory.json"
+
+
+def _ensure_memory_dir() -> None:
+    MEMORY_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 _MAX_STR_LEN = 2000
 _REGRESSION_CAP = 5
@@ -46,6 +50,7 @@ class ExperienceMemory:
         return {}
 
     def _save(self):
+        _ensure_memory_dir()
         self._path.write_text(json.dumps(self._data, indent=2, default=str))
 
     def record(
