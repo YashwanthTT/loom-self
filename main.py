@@ -17,12 +17,46 @@ def main():
     parser.add_argument("--task", type=str, help="Run a single task headlessly")
     parser.add_argument("--model", type=str, default=None, help="Model override (default kimi-k2.6)")
     parser.add_argument("--tui", action="store_true", help="Launch TUI (default if no --task)")
+    parser.add_argument("--evaluate", action="store_true", help="Print evaluation table for all tools, don't rewrite")
+    parser.add_argument("--improve", nargs="*", default=None, help="Improve tool(s) by name, e.g. --improve write_text_file")
+    parser.add_argument("--all", action="store_true", help="Improve every tool that currently needs it")
     args = parser.parse_args()
+
+    _check_credentials()
+
+    if args.evaluate:
+        from agent.evaluator import evaluate_all_tools
+
+        evaluate_all_tools()
+        return 0
+
+    if args.improve is not None:
+        from agent.orchestrator import AgentOrchestrator
+
+        agent = AgentOrchestrator(model=args.model)
+        for tn in args.improve:
+            print(f"\n[main] Improving '{tn}'...")
+            print(agent.improve_tool(tn))
+        return 0
+
+    if args.all:
+        from agent.evaluator import ToolEvaluator
+        from agent.orchestrator import AgentOrchestrator
+
+        agent = AgentOrchestrator(model=args.model)
+        results = ToolEvaluator().evaluate_all()
+        to_improve = [name for name, r in results.items() if r.needs_improvement]
+        if not to_improve:
+            print("[main] All tools are healthy — nothing to do.")
+            return 0
+        print(f"[main] Tools needing improvement: {to_improve}")
+        for tn in to_improve:
+            print(f"\n[main] Improving '{tn}'...")
+            print(agent.improve_tool(tn))
+        return 0
 
     # inference handles .env loading
     from agent.orchestrator import AgentOrchestrator
-
-    _check_credentials()
 
     if args.task:
         agent = AgentOrchestrator(model=args.model)
